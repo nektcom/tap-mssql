@@ -1,7 +1,12 @@
 {
   "name": "tap-mssql",
-  "variant": "wintersrd",
+  "variant": "nekt",
+  "namespace": "tap_mssql",
   "pip_url": "-e ./extract/tap-mssql",
   "executable": "tap-mssql",
-  "capabilities": ["state", "catalog", "discover"]
+  "capabilities": [
+    "state",
+    "catalog",
+    "discover"
+  ]
 }
