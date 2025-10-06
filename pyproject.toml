@@ -1,27 +1,27 @@
 [tool.poetry]
 name = "tap-mssql"
-version = "2.6.5"
-description = "A pipelinewise compatible tap for connecting Microsoft SQL Server"
-authors = ["Rob Winters <wintersrd@gmail.com>"]
+version = "3.0.0"
+description = "`tap-mssql` is a Singer tap for Microsoft SQL Server, built with the Meltano Singer SDK."
+authors = ["Nekt Team and Contributors"]
+maintainers = ["Nekt Team and Contributors"]
 license = "GNU Affero"
 readme = "README.md"
-homepage = "https://robertwinters.nl"
-repository = "https://github.com/wintersrd/pipelinewise-tap-mssql"
-keywords = ["singer", "meltano", "pipelinewise", "mssql"]
+homepage = "https://nekt.com"
+repository = "https://github.com/nektcom/nekt-core"
+keywords = ["MSSQL", "SQL Server", "Singer", "ELT", "Meltano", "Meltano SDK"]
 classifiers = ["Development Status :: 5 - Production/Stable", "Topic :: Database"]
+packages = [
+    { include = "tap_mssql" }
+]
 
 [tool.poetry.scripts]
-tap-mssql = 'tap_mssql.__init__:main'
+tap-mssql = 'tap_mssql.tap:TapMSSQL.cli'
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
-attrs = ">=24.2.0"
-pendulum = ">=1.2.0"
-realit-singer-python = ">=5.0.0"
-# pymssql==2.2.8 broken: https://github.com/pymssql/pymssql/issues/833
-pymssql = ">=2.1.4,!=2.2.8"
-backoff = ">=1.8.0"
-custom-logger = {git = "https://github.com/nektcom/nekt-custom-logger-module.git", rev = "v0.0.7"}
+python = ">=3.11,<4.0"
+sqlalchemy = "^2.0.36"
+pymssql = "^2.3.1"
+nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.3.0"}
 
 [tool.poetry.dev-dependencies]
 docker = "^7.1.0"
