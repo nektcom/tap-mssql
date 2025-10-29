@@ -1,0 +1,169 @@
+{
+  "meltano": {
+    "name": "tap-mssql",
+    "variant": "nekt",
+    "namespace": "tap_mssql",
+    "pip_url": "-e ./extract/tap-mssql",
+    "executable": "tap-mssql",
+    "capabilities": [
+      "state",
+      "catalog",
+      "discover"
+    ]
+  },
+  "connectors": [
+    {
+      "connector_slug": "mssql",
+      "config_template": {
+        "type": "object",
+        "required": [
+          "host",
+          "port",
+          "user",
+          "database",
+          "password"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "order": 1,
+            "title": "Host",
+            "el_type": "extractor",
+            "description": "The host address of your database."
+          },
+          "port": {
+            "type": "integer",
+            "order": 2,
+            "title": "Port",
+            "default": 1433,
+            "el_type": "extractor",
+            "description": "The port used for connecting to your database."
+          },
+          "user": {
+            "type": "string",
+            "order": 4,
+            "title": "User",
+            "el_type": "extractor",
+            "description": "The user name for accessing your database."
+          },
+          "database": {
+            "type": "string",
+            "order": 3,
+            "title": "Database",
+            "el_type": "extractor",
+            "description": "The name of the database."
+          },
+          "password": {
+            "type": "string",
+            "order": 5,
+            "title": "Password",
+            "format": "password",
+            "el_type": "extractor",
+            "description": "The password used for accessing your database."
+          },
+          "filter_dbs": {
+            "type": "string",
+            "order": 6,
+            "title": "Filter schemas",
+            "el_type": "extractor",
+            "description": "Define which schemas to filter. Separate them by `comma`, if more than one.",
+            "placeholder": "schema1, schema2, schema3",
+            "advanced_settings": true
+          },
+          "cursor_array_size": {
+            "type": "integer",
+            "order": 7,
+            "title": "Cursor Array Size",
+            "default": 10000,
+            "el_type": "extractor",
+            "examples": [
+              1,
+              10000
+            ],
+            "description": "This allows fetching records in batches speeding up network traffic. Recommend a setting of 10000 records.",
+            "advanced_settings": true
+          },
+          "use_date_datatype": {
+            "type": "boolean",
+            "order": 8,
+            "title": "Use proper type for dates",
+            "default": true,
+            "el_type": "extractor",
+            "description": "Use proper types for dates instead of handling them as plain strings.",
+            "advanced_settings": true
+          }
+        },
+        "ssh_tunnel": {
+          "type": "object",
+          "order": 9,
+          "title": "SSH Tunnel",
+          "format": "parent",
+          "el_type": "extractor",
+          "properties": {
+            "enable": {
+              "type": "boolean",
+              "order": 10,
+              "title": "Enable SSH Tunnel",
+              "default": false,
+              "el_type": "extractor",
+              "description": "Enable SSH tunnel to use in your database connection."
+            },
+            "host": {
+              "type": "string",
+              "order": 11,
+              "title": "SSH host",
+              "el_type": "extractor",
+              "dependent": "enable",
+              "description": "The host for accessing your SSH tunnel."
+            },
+            "password": {
+              "type": "string",
+              "order": 12,
+              "title": "SSH password",
+              "el_type": "extractor",
+              "dependent": "enable",
+              "description": "The password for accessing your SSH tunnel. Use either password or private key"
+            },
+            "port": {
+              "type": "integer",
+              "order": 13,
+              "title": "SSH port",
+              "default": 22,
+              "el_type": "extractor",
+              "dependent": "enable",
+              "description": "The port used for connecting to your SSH tunnel. The default SSH port is 22, but your port might be different."
+            },
+            "username": {
+              "type": "string",
+              "order": 14,
+              "title": "SSH username",
+              "el_type": "extractor",
+              "dependent": "enable",
+              "description": "The user name for accessing your SSH tunnel."
+            },
+            "private_key": {
+              "type": "string",
+              "order": 15,
+              "title": "SSH private key",
+              "format": "textarea",
+              "el_type": "extractor",
+              "dependent": "enable",
+              "description": "The private key for accessing your SSH tunnel. Use either password or private key"
+            },
+            "run_tunnel_auth_interactive_dumb": {
+              "type": "boolean",
+              "order": 16,
+              "title": "Enable dumb interaction on auth",
+              "hidden": true,
+              "default": false,
+              "el_type": "extractor",
+              "description": "Enable dumb interaction on auth for ssh tunnel"
+            }
+          },
+          "description": "SSH Tunnel to be used in your database connection",
+          "advanced_settings": true
+        }
+      }
+    }
+  ]
+}

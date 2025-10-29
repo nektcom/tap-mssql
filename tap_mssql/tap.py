@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import atexit
 import copy
+import io
+import signal
 import sys
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, cast
 
+import paramiko
 from nekt_singer_sdk import SQLStream, SQLTap, Stream
 from nekt_singer_sdk import typing as th  # JSON schema typing helpers
 from nekt_singer_sdk.contrib.msgspec import MsgSpecWriter
@@ -15,6 +19,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.engine.url import make_url
 
 from tap_mssql.connector import MSSQLConnector
+from tap_mssql.ssh_tunnel import SSHTunnelForwarder
 from tap_mssql.streams import MSSQLStream
 
 if TYPE_CHECKING:
@@ -153,6 +158,68 @@ class TapMSSQL(SQLTap):
             default=False,
             description="Enable TDS protocol logging for debugging purposes.",
         ),
+        th.Property(
+            "ssh_tunnel",
+            th.ObjectType(
+                th.Property(
+                    "enable",
+                    th.BooleanType,
+                    required=False,
+                    default=False,
+                    description=("Enable an ssh tunnel (also known as bastion server), see the other ssh_tunnel.* properties for more details"),
+                ),
+                th.Property(
+                    "host",
+                    th.StringType,
+                    required=False,
+                    description="Host of the bastion server, this is the host we'll connect to via ssh",
+                ),
+                th.Property(
+                    "username",
+                    th.StringType,
+                    required=False,
+                    description="Username to connect to bastion server",
+                ),
+                th.Property(
+                    "port",
+                    th.IntegerType,
+                    required=False,
+                    default=22,
+                    description="Port to connect to bastion server",
+                ),
+                th.Property(
+                    "password",
+                    th.StringType,
+                    required=False,
+                    secret=True,
+                    description="Password for authentication to the bastion server",
+                ),
+                th.Property(
+                    "private_key",
+                    th.StringType,
+                    required=False,
+                    secret=True,
+                    description="Private Key for authentication to the bastion server",
+                ),
+                th.Property(
+                    "private_key_password",
+                    th.StringType,
+                    required=False,
+                    secret=True,
+                    default=None,
+                    description="Private Key Password, leave None if no password is set",
+                ),
+                th.Property(
+                    "run_tunnel_auth_interactive_dumb",
+                    th.BooleanType,
+                    required=False,
+                    default=False,
+                    description=("Enable dumb interaction on auth for ssh tunnel"),
+                ),
+            ),
+            required=False,
+            description="SSH Tunnel Configuration, this is a json object",
+        ),
     ).to_dict()
 
     def get_sqlalchemy_url(self, config: Mapping[str, Any]) -> str:
@@ -187,6 +254,11 @@ class TapMSSQL(SQLTap):
     @cached_property
     def connector(self) -> MSSQLConnector:
         url = make_url(self.get_sqlalchemy_url(config=self.config))
+        ssh_config = self.config.get("ssh_tunnel", {})
+
+        if ssh_config.get("enable", False):
+            # Return a new URL with SSH tunnel parameters
+            url = self.ssh_tunnel_connect(ssh_config=ssh_config, url=url)
 
         return MSSQLConnector(
             is_running_discovery=self.is_running_discovery,
@@ -299,6 +371,71 @@ class TapMSSQL(SQLTap):
         # including child streams which are otherwise skipped in the loop above
         for stream in self.streams.values():
             stream.log_sync_costs()
+
+    def guess_key_type(self, key_data: str) -> paramiko.PKey:
+        for key_class in (
+            paramiko.RSAKey,
+            paramiko.DSSKey,
+            paramiko.ECDSAKey,
+            paramiko.Ed25519Key,
+        ):
+            try:
+                key = key_class.from_private_key(io.StringIO(key_data))  # type: ignore[attr-defined]
+            except paramiko.SSHException:  # noqa: PERF203
+                continue
+            else:
+                return key
+
+        errmsg = "Could not determine the key type."
+        raise ValueError(errmsg)
+
+    def ssh_tunnel_connect(self, *, ssh_config: dict[str, Any], url: URL) -> URL:
+        """Connect to the SSH Tunnel and swap the URL to use the tunnel.
+
+        Args:
+            ssh_config: The SSH Tunnel configuration
+            url: The original URL to connect to.
+
+        Returns:
+            The new URL to connect to, using the tunnel.
+        """
+        if ssh_config.get("password"):
+            credentials = {
+                "ssh_password": ssh_config.get("password"),
+            }
+        else:
+            credentials = {
+                "ssh_private_key": self.guess_key_type(ssh_config["private_key"]),
+                "ssh_private_key_password": ssh_config.get("private_key_password"),
+            }
+
+        self.ssh_tunnel: SSHTunnelForwarder = SSHTunnelForwarder(
+            ssh_address_or_host=(ssh_config["host"], ssh_config["port"]),
+            ssh_username=ssh_config["username"],
+            remote_bind_address=(url.host, url.port),
+            run_tunnel_auth_interactive_dumb=ssh_config.get("run_tunnel_auth_interactive_dumb", False),
+            **credentials,
+        )
+        self.ssh_tunnel.start()
+        self.internal_logger.info("SSH Tunnel started")
+        # On program exit clean up, want to also catch signals
+        atexit.register(self.clean_up)
+        signal.signal(signal.SIGTERM, self.catch_signal)
+        # Probably overkill to catch SIGINT, but needed for SIGTERM
+        signal.signal(signal.SIGINT, self.catch_signal)
+
+        # Swap the URL to use the tunnel
+        return url.set(
+            host=self.ssh_tunnel.local_bind_host,
+            port=self.ssh_tunnel.local_bind_port,
+        )
+
+    def clean_up(self) -> None:
+        self.internal_logger.info("Shutting down SSH Tunnel")
+        self.ssh_tunnel.stop()
+
+    def catch_signal(self, signum, frame) -> None:  # noqa: ANN001 ARG002
+        sys.exit(1)  # Calling this to be sure atexit is called, so clean_up gets called
 
 
 if __name__ == "__main__":

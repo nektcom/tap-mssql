@@ -21,6 +21,8 @@ tap-mssql = 'tap_mssql.tap:TapMSSQL.cli'
 python = ">=3.11,<4.0"
 sqlalchemy = "^2.0.36"
 pymssql = "^2.3.1"
+sshtunnel = "^0.4.0"
+paramiko = "^3.5.0"
 nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.3.0"}
 
 [tool.poetry.dev-dependencies]
