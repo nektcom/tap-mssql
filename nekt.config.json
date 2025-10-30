@@ -91,77 +91,77 @@
             "el_type": "extractor",
             "description": "Use proper types for dates instead of handling them as plain strings.",
             "advanced_settings": true
-          }
-        },
-        "ssh_tunnel": {
-          "type": "object",
-          "order": 9,
-          "title": "SSH Tunnel",
-          "format": "parent",
-          "el_type": "extractor",
-          "properties": {
-            "enable": {
-              "type": "boolean",
-              "order": 10,
-              "title": "Enable SSH Tunnel",
-              "default": false,
-              "el_type": "extractor",
-              "description": "Enable SSH tunnel to use in your database connection."
-            },
-            "host": {
-              "type": "string",
-              "order": 11,
-              "title": "SSH host",
-              "el_type": "extractor",
-              "dependent": "enable",
-              "description": "The host for accessing your SSH tunnel."
-            },
-            "password": {
-              "type": "string",
-              "order": 12,
-              "title": "SSH password",
-              "el_type": "extractor",
-              "dependent": "enable",
-              "description": "The password for accessing your SSH tunnel. Use either password or private key"
-            },
-            "port": {
-              "type": "integer",
-              "order": 13,
-              "title": "SSH port",
-              "default": 22,
-              "el_type": "extractor",
-              "dependent": "enable",
-              "description": "The port used for connecting to your SSH tunnel. The default SSH port is 22, but your port might be different."
-            },
-            "username": {
-              "type": "string",
-              "order": 14,
-              "title": "SSH username",
-              "el_type": "extractor",
-              "dependent": "enable",
-              "description": "The user name for accessing your SSH tunnel."
-            },
-            "private_key": {
-              "type": "string",
-              "order": 15,
-              "title": "SSH private key",
-              "format": "textarea",
-              "el_type": "extractor",
-              "dependent": "enable",
-              "description": "The private key for accessing your SSH tunnel. Use either password or private key"
-            },
-            "run_tunnel_auth_interactive_dumb": {
-              "type": "boolean",
-              "order": 16,
-              "title": "Enable dumb interaction on auth",
-              "hidden": true,
-              "default": false,
-              "el_type": "extractor",
-              "description": "Enable dumb interaction on auth for ssh tunnel"
-            }
           },
-          "description": "SSH Tunnel to be used in your database connection",
-          "advanced_settings": true
+          "ssh_tunnel": {
+            "type": "object",
+            "order": 9,
+            "title": "SSH Tunnel",
+            "format": "parent",
+            "el_type": "extractor",
+            "properties": {
+              "enable": {
+                "type": "boolean",
+                "order": 10,
+                "title": "Enable SSH Tunnel",
+                "default": false,
+                "el_type": "extractor",
+                "description": "Enable SSH tunnel to use in your database connection."
+              },
+              "host": {
+                "type": "string",
+                "order": 11,
+                "title": "SSH host",
+                "el_type": "extractor",
+                "dependent": "enable",
+                "description": "The host for accessing your SSH tunnel."
+              },
+              "password": {
+                "type": "string",
+                "order": 12,
+                "title": "SSH password",
+                "el_type": "extractor",
+                "dependent": "enable",
+                "description": "The password for accessing your SSH tunnel. Use either password or private key"
+              },
+              "port": {
+                "type": "integer",
+                "order": 13,
+                "title": "SSH port",
+                "default": 22,
+                "el_type": "extractor",
+                "dependent": "enable",
+                "description": "The port used for connecting to your SSH tunnel. The default SSH port is 22, but your port might be different."
+              },
+              "username": {
+                "type": "string",
+                "order": 14,
+                "title": "SSH username",
+                "el_type": "extractor",
+                "dependent": "enable",
+                "description": "The user name for accessing your SSH tunnel."
+              },
+              "private_key": {
+                "type": "string",
+                "order": 15,
+                "title": "SSH private key",
+                "format": "textarea",
+                "el_type": "extractor",
+                "dependent": "enable",
+                "description": "The private key for accessing your SSH tunnel. Use either password or private key"
+              },
+              "run_tunnel_auth_interactive_dumb": {
+                "type": "boolean",
+                "order": 16,
+                "title": "Enable dumb interaction on auth",
+                "hidden": true,
+                "default": false,
+                "el_type": "extractor",
+                "description": "Enable dumb interaction on auth for ssh tunnel"
+              }
+            },
+            "description": "SSH Tunnel to be used in your database connection",
+            "advanced_settings": true
+          }
         }
       }
     }
