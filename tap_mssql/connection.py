@@ -4,10 +4,8 @@ from os import environ
 
 import backoff
 import pymssql
-import singer
-from custom_logger import user_logger
+from nekt_singer_sdk.custom_logger import user_logger
 
-# LOGGER = singer.get_logger()
 LOGGER = user_logger
 
 

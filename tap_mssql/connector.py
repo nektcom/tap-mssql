@@ -187,6 +187,155 @@ class MSSQLConnector(SQLConnector):
         exclude_schemas = ["information_schema", "INFORMATION_SCHEMA", "performance_schema", "sys"]
         return [schema for schema in schemas if schema not in exclude_schemas]
 
+    def _should_include_table(self, schema_name: str, table_name: str) -> bool:
+        """Check if a table should be included based on filter_tables config.
+        
+        Args:
+            schema_name: The schema name
+            table_name: The table name
+            
+        Returns:
+            True if the table should be included, False otherwise
+        """
+        filter_tables = self.config.get("filter_tables")
+        if not filter_tables:
+            return True
+            
+        table_filters = [t.strip() for t in filter_tables.split(",")]
+        full_table_name = f"{schema_name}.{table_name}"
+        
+        for table_filter in table_filters:
+            # Check for exact match with schema.table format
+            if table_filter == full_table_name:
+                return True
+            # Check for table name only match (no schema specified)
+            if "." not in table_filter and table_filter == table_name:
+                return True
+                
+        return False
+
+    def discover_catalog_entries(
+        self,
+        *,
+        exclude_schemas: list[str] | None = None,
+        reflect_indices: bool = True,
+    ) -> list[dict]:
+        """Return a list of catalog entries from discovery with table filtering.
+
+        Args:
+            exclude_schemas: A list of schema names to exclude from discovery.
+            reflect_indices: Whether to reflect indices to detect potential primary keys.
+
+        Returns:
+            The discovered catalog entries as a list.
+        """
+        import typing as t
+        import sqlalchemy as sa
+        from sqlalchemy.engine import reflection
+
+        self.user_discovery_logger.info("Discovering streams...")
+        result: list[dict] = []
+        engine = self._engine
+        inspected = sa.inspect(engine)
+        object_kinds = (
+            (reflection.ObjectKind.TABLE, False, "tables"),
+            (reflection.ObjectKind.ANY_VIEW, True, "views and materialized views"),
+        )
+
+        self.user_discovery_logger.info("Discovering schemas...")
+        schemas = self.get_schema_names(engine, inspected)
+        if schemas:
+            schema_list = "\n\t- " + "\n\t- ".join(schemas)
+            self.user_discovery_logger.info(f"Discovered schemas ({len(schemas)}): {schema_list}")
+        else:
+            self.user_discovery_logger.error("No schemas discovered, please check your configurations.")
+
+        exclude_schemas = exclude_schemas or []
+        filter_tables_config = self.config.get("filter_tables")
+        
+        for schema_name in schemas:
+            if schema_name in exclude_schemas:
+                self.user_discovery_logger.info(f"Skipping schema '{schema_name}' (schema in exclude_schemas config).")
+                continue
+
+            self.user_discovery_logger.info(f"Discovering metadata for schema '{schema_name}'...")
+            try:
+                primary_keys = inspected.get_multi_pk_constraint(schema=schema_name)
+
+                if reflect_indices:
+                    indices = inspected.get_multi_indexes(schema=schema_name)
+                else:
+                    indices = {}
+                self.user_discovery_logger.info(f"Discovered metadata for schema '{schema_name}'.")
+            except Exception as e:
+                self.user_discovery_logger.error(f"Skipping schema '{schema_name}' due to error: {e}")
+                continue
+
+            for object_kind, is_view, object_kind_name in object_kinds:
+
+                self.user_discovery_logger.info(f"Discovering {object_kind_name} for schema '{schema_name}'...")
+                try:
+                    columns = inspected.get_multi_columns(
+                        schema=schema_name,
+                        kind=object_kind,
+                    )
+                    
+                    # Apply table filtering
+                    if filter_tables_config:
+                        original_count = len(columns)
+                        columns = {
+                            (schema, table): cols 
+                            for (schema, table), cols in columns.items()
+                            if self._should_include_table(schema, table)
+                        }
+                        filtered_count = len(columns)
+                        if original_count > filtered_count:
+                            self.user_discovery_logger.info(
+                                f"Filtered {object_kind_name} for schema '{schema_name}' "
+                                f"from {original_count} to {filtered_count} based on filter_tables config."
+                            )
+                    
+                    if columns:
+                        columns_list = "\n\t- " + "\n\t- ".join(table for _, table in columns)
+                        self.user_discovery_logger.info(
+                            f"Discovered {object_kind_name} for schema '{schema_name}' ({len(columns)}): {columns_list}"
+                        )
+                    else:
+                        self.user_discovery_logger.info(f"No {object_kind_name} discovered for schema '{schema_name}'.")
+                except Exception as e:
+                    self.user_discovery_logger.error(
+                        f"Skipping {object_kind_name} for schema '{schema_name}' due to error: {e}"
+                    )
+                    continue
+
+                for schema, table in columns:
+                    try:
+                        self.user_discovery_logger.info(f"Discovering details for table '{schema}.{table}'...")
+                        new_catalog_entry = self.discover_catalog_entry(
+                            engine,
+                            inspected,
+                            schema_name,
+                            table,
+                            is_view,
+                            reflected_columns=columns[schema, table],
+                            reflected_pk=primary_keys.get((schema, table)),
+                            reflected_indices=indices.get((schema, table), []),
+                        ).to_dict()
+                        result.append(new_catalog_entry)
+                    except Exception as e:
+                        self.user_discovery_logger.error(
+                            f"Skipping table '{table}' of schema '{schema}' due to error: {e}"
+                        )
+                        continue
+
+        if result:
+            stream_list = "\n\t- " + "\n\t- ".join([catalog_entry.get("tap_stream_id") for catalog_entry in result])
+            self.user_discovery_logger.info(f"Discovered streams ({len(result)}): {stream_list}")
+        else:
+            self.user_discovery_logger.error("No streams discovered, please check your configurations.")
+
+        return result
+
     def discover_catalog_entry(
         self,
         engine: Engine,

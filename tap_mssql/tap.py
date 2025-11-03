@@ -107,6 +107,16 @@ class TapMSSQL(SQLTap):
             ),
         ),
         th.Property(
+            "filter_tables",
+            th.StringType,
+            description=(
+                "Comma-separated list of table names to filter. If provided, the tap will only process "
+                "the specified tables and ignore others. Table names should be in format 'schema.table' "
+                "or just 'table' (which will match tables in any schema). If left blank, all tables "
+                "in the selected schemas will be processed."
+            ),
+        ),
+        th.Property(
             "characterset",
             th.StringType,
             default="utf8",

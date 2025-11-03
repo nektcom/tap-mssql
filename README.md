@@ -106,6 +106,22 @@ To filter the discovery to a particular schema within a database. This is useful
 
 Optional:
 
+To filter the discovery to specific tables within the database. This is useful if you have a large number of tables and wish to speed up the discovery significantly.
+
+```json
+{
+  "filter_tables": "schema1.table1,schema2.table2,table3"
+}
+```
+
+Tables can be specified as:
+- `schema.table` - Match a specific table in a specific schema
+- `table` - Match a table with this name in any schema
+
+Multiple tables can be specified as a comma-separated list.
+
+Optional:
+
 To emit a date as a date without a time component or time without an UTC offset. This is helpful to avoid time conversions or to just work with a date datetype in the target database. If this boolean config item is not set, the default behaviour is `false` i.e. emit date datatypes as a datetime. It is recommended to set this on if you have time datetypes and are having issues uploading into into a target database.
 
 ```json
