@@ -117,6 +117,19 @@ To filter the discovery to specific tables within the database. This is useful i
 Tables can be specified as:
 - `schema.table` - Match a specific table in a specific schema
 - `table` - Match a table with this name in any schema
+- Wildcard patterns using `*` (matches any sequence) and `?` (matches single character)
+
+Examples with wildcards:
+```json
+{
+  "filter_tables": "user_*,dbo.order_*,temp_????"
+}
+```
+
+This would match:
+- `user_accounts`, `user_profiles`, etc. (in any schema)
+- `dbo.order_items`, `dbo.order_history`, etc. (in dbo schema only)
+- `temp_2023`, `temp_test`, etc. (exactly 4 characters after temp_)
 
 Multiple tables can be specified as a comma-separated list.
 

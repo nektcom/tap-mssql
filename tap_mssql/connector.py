@@ -190,6 +190,10 @@ class MSSQLConnector(SQLConnector):
     def _should_include_table(self, schema_name: str, table_name: str) -> bool:
         """Check if a table should be included based on filter_tables config.
         
+        Supports wildcard patterns:
+        - * matches any sequence of characters
+        - ? matches any single character
+        
         Args:
             schema_name: The schema name
             table_name: The table name
@@ -197,6 +201,8 @@ class MSSQLConnector(SQLConnector):
         Returns:
             True if the table should be included, False otherwise
         """
+        import fnmatch
+        
         filter_tables = self.config.get("filter_tables")
         if not filter_tables:
             return True
@@ -205,12 +211,14 @@ class MSSQLConnector(SQLConnector):
         full_table_name = f"{schema_name}.{table_name}"
         
         for table_filter in table_filters:
-            # Check for exact match with schema.table format
-            if table_filter == full_table_name:
-                return True
-            # Check for table name only match (no schema specified)
-            if "." not in table_filter and table_filter == table_name:
-                return True
+            # Check for schema.table format with wildcards
+            if "." in table_filter:
+                if fnmatch.fnmatch(full_table_name, table_filter):
+                    return True
+            else:
+                # Check for table name only match with wildcards
+                if fnmatch.fnmatch(table_name, table_filter):
+                    return True
                 
         return False
 
