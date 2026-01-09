@@ -170,6 +170,15 @@ class TapMSSQL(SQLTap):
             description="Enable TDS protocol logging for debugging purposes.",
         ),
         th.Property(
+            "encryption",
+            th.StringType,
+            description=(
+                "Encryption setting for the connection. Valid values are 'off', 'request', or 'require'. "
+                "Use 'off' to disable encryption, 'request' to prefer encryption but allow unencrypted, "
+                "or 'require' to force encrypted connections. Note if sqlalchemy_url is set this will be ignored."
+            ),
+        ),
+        th.Property(
             "ssh_tunnel",
             th.ObjectType(
                 th.Property(

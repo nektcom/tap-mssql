@@ -435,6 +435,10 @@ class MSSQLConnector(SQLConnector):
             if self.config.get("conn_properties"):
                 connect_args["conn_properties"] = self.config["conn_properties"]
 
+            # Add encryption if specified (off, request, or require)
+            if self.config.get("encryption"):
+                connect_args["encryption"] = self.config["encryption"]
+
             return sa.create_engine(
                 self.sqlalchemy_url,
                 echo=False,

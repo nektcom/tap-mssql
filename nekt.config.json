@@ -157,6 +157,50 @@
             },
             "description": "SSH Tunnel to be used in your database connection",
             "advanced_settings": true
+          },
+          "tds_version": {
+            "type": "boolean",
+            "order": 11,
+            "title": "TDS version",
+            "default": "7.3",
+            "el_type": "extractor",
+            "description": "The TDS version to use for the connection.",
+            "advanced_settings": true
+          },
+          "enable_tds_logging": {
+            "type": "boolean",
+            "order": 12,
+            "title": "Enable TDS logging",
+            "default": false,
+            "el_type": "extractor",
+            "description": "Enable TDS logging for the connection.",
+            "advanced_settings": true
+          },
+          "encryption": {
+            "type": "string",
+            "order": 13,
+            "title": "Encryption",
+            "format": "dropdown",
+            "default": "off",
+            "enum": ["off", "request", "require"],
+            "allowed_values": [
+              {
+                "label": "Off",
+                "value": "off"
+              },
+              {
+                "label": "Request",
+                "value": "request"
+              },
+              {
+                "label": "Require",
+                "value": "require"
+              }
+            ],
+            "default_value": "off",
+            "el_type": "extractor",
+            "description": "The encryption to use for the connection.",
+            "advanced_settings": true
           }
         }
       }

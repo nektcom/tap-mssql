@@ -35,6 +35,9 @@ class MSSQLConnection(pymssql.Connection):
         # Add additional conn_properties for specific version settings
         if config.get("conn_properties"):
             args["conn_properties"] = config.get("conn_properties")
+        # Add encryption if specified (off, request, or require)
+        if config.get("encryption"):
+            args["encryption"] = config.get("encryption")
         # Optional ability to dump TDS logs
         if config.get("enable_tds_logging"):
             environ["TDSDUMP"] = "stderr"
