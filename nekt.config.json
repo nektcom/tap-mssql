@@ -159,7 +159,7 @@
             "advanced_settings": true
           },
           "tds_version": {
-            "type": "boolean",
+            "type": "string",
             "order": 11,
             "title": "TDS version",
             "default": "7.3",
