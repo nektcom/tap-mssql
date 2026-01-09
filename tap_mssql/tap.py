@@ -265,10 +265,27 @@ class TapMSSQL(SQLTap):
     def get_sqlalchemy_query(self, config: Mapping[str, Any]) -> dict:
         """Get query parameters for SQLAlchemy URL.
 
-        Note: For pymssql, charset and tds_version should be passed as connect_args,
-        not as URL query parameters.
+        Note: For pymssql, parameters need to be passed as URL query parameters
+        because the pymssql dialect uses url.query, not connect_args.
         """
         query = {}
+
+        # Add charset if specified
+        if config.get("characterset"):
+            query["charset"] = config["characterset"]
+
+        # Add tds_version if specified
+        if config.get("tds_version"):
+            query["tds_version"] = config["tds_version"]
+
+        # Add encryption if specified
+        if config.get("encryption"):
+            query["encryption"] = config["encryption"]
+
+        # Add conn_properties if specified
+        if config.get("conn_properties"):
+            query["conn_properties"] = config["conn_properties"]
+
         return query
 
     @cached_property

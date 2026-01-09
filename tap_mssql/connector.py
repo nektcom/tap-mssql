@@ -421,24 +421,14 @@ class MSSQLConnector(SQLConnector):
 
     def create_engine(self) -> Engine:
         try:
-            connect_args = {}
+            # Enable TDS logging if requested (via environment variable)
+            if self.config.get("enable_tds_logging"):
+                from os import environ
+                environ["TDSDUMP"] = "stderr"
 
-            # Add charset if specified
-            if self.config.get("characterset"):
-                connect_args["charset"] = self.config["characterset"]
-
-            # Add tds_version if specified
-            if self.config.get("tds_version"):
-                connect_args["tds_version"] = self.config["tds_version"]
-
-            # Add conn_properties if specified
-            if self.config.get("conn_properties"):
-                connect_args["conn_properties"] = self.config["conn_properties"]
-
-            # Add encryption if specified (off, request, or require)
-            if self.config.get("encryption"):
-                connect_args["encryption"] = self.config["encryption"]
-
+            # Note: For pymssql, connection parameters (charset, tds_version, encryption, etc.)
+            # are passed via URL query parameters in get_sqlalchemy_query(), not connect_args.
+            # The pymssql dialect uses url.query to build the connection parameters.
             return sa.create_engine(
                 self.sqlalchemy_url,
                 echo=False,
@@ -449,7 +439,6 @@ class MSSQLConnector(SQLConnector):
                 max_overflow=self.pool_size * 2,
                 pool_recycle=300,
                 pool_pre_ping=True,
-                connect_args=connect_args,
             )
         except TypeError:
             internal_logger.exception(
