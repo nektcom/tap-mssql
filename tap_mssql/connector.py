@@ -189,27 +189,27 @@ class MSSQLConnector(SQLConnector):
 
     def _should_include_table(self, schema_name: str, table_name: str) -> bool:
         """Check if a table should be included based on filter_tables config.
-        
+
         Supports wildcard patterns:
         - * matches any sequence of characters
         - ? matches any single character
-        
+
         Args:
             schema_name: The schema name
             table_name: The table name
-            
+
         Returns:
             True if the table should be included, False otherwise
         """
         import fnmatch
-        
+
         filter_tables = self.config.get("filter_tables")
         if not filter_tables:
             return True
-            
+
         table_filters = [t.strip() for t in filter_tables.split(",")]
         full_table_name = f"{schema_name}.{table_name}"
-        
+
         for table_filter in table_filters:
             # Check for schema.table format with wildcards
             if "." in table_filter:
@@ -219,8 +219,53 @@ class MSSQLConnector(SQLConnector):
                 # Check for table name only match with wildcards
                 if fnmatch.fnmatch(table_name, table_filter):
                     return True
-                
+
         return False
+
+    def _get_filter_names(self, schema_name: str) -> list[str] | None:
+        """Get exact table names to pass to SQLAlchemy's filter_names parameter.
+
+        Only returns exact (non-wildcard) table names that match the given schema.
+        Returns None if no filter is configured or if only wildcard patterns exist
+        (meaning all tables must be fetched for post-filtering).
+
+        Args:
+            schema_name: The schema name to filter for.
+
+        Returns:
+            A list of table names to filter on, or None if no pre-filtering is possible.
+        """
+        filter_tables = self.config.get("filter_tables")
+        if not filter_tables:
+            return None
+
+        table_filters = [t.strip() for t in filter_tables.split(",")]
+        has_wildcard = False
+        exact_names = []
+
+        for table_filter in table_filters:
+            is_wildcard = "*" in table_filter or "?" in table_filter
+            if "." in table_filter:
+                filter_schema, filter_table = table_filter.split(".", 1)
+                if is_wildcard:
+                    # Wildcard with schema - only matters if it matches this schema
+                    import fnmatch
+                    if fnmatch.fnmatch(schema_name, filter_schema):
+                        has_wildcard = True
+                elif filter_schema == schema_name:
+                    exact_names.append(filter_table)
+            else:
+                if is_wildcard:
+                    has_wildcard = True
+                else:
+                    exact_names.append(table_filter)
+
+        # If there are any wildcard patterns, we can't pre-filter because
+        # we'd miss tables that match the wildcard
+        if has_wildcard:
+            return None
+
+        return exact_names if exact_names else None
 
     def discover_catalog_entries(
         self,
@@ -267,11 +312,23 @@ class MSSQLConnector(SQLConnector):
                 continue
 
             self.user_discovery_logger.info(f"Discovering metadata for schema '{schema_name}'...")
+
+            # Pre-filter table names at the database level when possible
+            filter_names = self._get_filter_names(schema_name) if filter_tables_config else None
+            if filter_names:
+                self.user_discovery_logger.info(
+                    f"Pre-filtering discovery for schema '{schema_name}' to {len(filter_names)} tables."
+                )
+
             try:
-                primary_keys = inspected.get_multi_pk_constraint(schema=schema_name)
+                primary_keys = inspected.get_multi_pk_constraint(
+                    schema=schema_name, filter_names=filter_names,
+                )
 
                 if reflect_indices:
-                    indices = inspected.get_multi_indexes(schema=schema_name)
+                    indices = inspected.get_multi_indexes(
+                        schema=schema_name, filter_names=filter_names,
+                    )
                 else:
                     indices = {}
                 self.user_discovery_logger.info(f"Discovered metadata for schema '{schema_name}'.")
@@ -286,13 +343,15 @@ class MSSQLConnector(SQLConnector):
                     columns = inspected.get_multi_columns(
                         schema=schema_name,
                         kind=object_kind,
+                        filter_names=filter_names,
                     )
-                    
-                    # Apply table filtering
-                    if filter_tables_config:
+
+                    # Apply post-filtering for wildcard patterns (when filter_names is None
+                    # but filter_tables_config is set, it means wildcards are in use)
+                    if filter_tables_config and filter_names is None:
                         original_count = len(columns)
                         columns = {
-                            (schema, table): cols 
+                            (schema, table): cols
                             for (schema, table), cols in columns.items()
                             if self._should_include_table(schema, table)
                         }
