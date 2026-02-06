@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from nekt_singer_sdk import SQLStream
@@ -25,6 +26,28 @@ class MSSQLStream(SQLStream):
 
     is_sorted = False
 
+    @staticmethod
+    def _parse_replication_key_value(value: str) -> str | datetime:
+        """Parse a replication key value, converting datetime strings to datetime objects.
+
+        pymssql cannot send ISO 8601 datetime strings (e.g. '2025-09-01T17:49:59+00:00')
+        to SQL Server as parameters. Converting to datetime objects allows pymssql to
+        handle the formatting correctly.
+        """
+        if not isinstance(value, str):
+            return value
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return value
+
     def get_records(self, context: dict | None) -> Iterable[dict[str, Any]]:
         if context:
             msg = f"Stream '{self.name}' does not support partitioning."
@@ -45,6 +68,7 @@ class MSSQLStream(SQLStream):
 
             start_val = self.get_starting_replication_key_value(context)
             if start_val:
+                start_val = self._parse_replication_key_value(start_val)
                 query = query.where(replication_key_col >= start_val)
 
         # Use standard streaming approach
