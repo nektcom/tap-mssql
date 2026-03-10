@@ -32,7 +32,9 @@
         "--catalog",
         ".secrets/catalog.json",
         "--state",
-        ".secrets/state.json"
+        ".secrets/state.json",
+        ">",
+        ".secrets/output.jsonl"
       ]
     },
     {
@@ -48,7 +50,7 @@
         ".secrets/config.json",
         "--discover",
         ">",
-        "output/catalog.json"
+        ".secrets/catalog.json"
       ]
     }
   ]
