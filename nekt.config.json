@@ -201,6 +201,43 @@
             "el_type": "extractor",
             "description": "The encryption to use for the connection.",
             "advanced_settings": true
+          },
+          "query_streams_only": {
+            "type": "boolean",
+            "order": 14,
+            "title": "Query streams only",
+            "default": false,
+            "el_type": "extractor",
+            "description": "If enabled, only query streams (defined in Query Streams) will be discovered and synced. Table and view discovery will be skipped entirely.",
+            "advanced_settings": true
+          },
+          "query_streams": {
+            "type": "array",
+            "order": 15,
+            "title": "Query Streams",
+            "format": "array-form",
+            "item_label": "Query Stream",
+            "description": "Define custom SQL queries as streams. Each entry requires a stream name (that must be unique) and a SQL query.",
+            "el_type": "extractor",
+            "items": {
+              "type": "object",
+              "required": ["stream_name", "query"],
+              "properties": {
+                "stream_name": {
+                  "type": "string",
+                  "title": "Stream Name",
+                  "pattern": "^[a-z][a-z0-9_]*$",
+                  "description": "Name for the stream that will be generated from this query."
+                },
+                "query": {
+                  "type": "string",
+                  "title": "SQL Query",
+                  "format": "textarea",
+                  "description": "SQL query to execute for extracting data."
+                }
+              }
+            },
+            "advanced_settings": true
           }
         }
       }

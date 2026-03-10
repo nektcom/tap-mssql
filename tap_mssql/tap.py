@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import copy
 import io
+import re
 import signal
 import sys
 from functools import cached_property
@@ -20,7 +21,7 @@ from sqlalchemy.engine.url import make_url
 
 from tap_mssql.connector import MSSQLConnector
 from tap_mssql.ssh_tunnel import SSHTunnelForwarder
-from tap_mssql.streams import MSSQLStream
+from tap_mssql.streams import MSSQLQueryStream, MSSQLStream
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -52,6 +53,37 @@ class TapMSSQL(SQLTap):
         if not (sql_alchemy_url_exists or individual_url_params_exist):
             msg = "Need either the sqlalchemy_url to be set or host and database to be set"
             self.user_logger.error(msg)
+            sys.exit(1)
+
+        self._validate_query_streams()
+
+    _STREAM_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+    def _validate_query_streams(self) -> None:
+        """Validate query_streams config: stream names must match pattern and be unique."""
+        query_streams = self.config.get("query_streams", [])
+        if not query_streams:
+            return
+
+        errors: list[str] = []
+        seen_names: dict[str, int] = {}
+        for i, qs in enumerate(query_streams, start=1):
+            name = qs.get("stream_name", "")
+            if not self._STREAM_NAME_PATTERN.match(name):
+                errors.append(
+                    f"  - Query stream #{i}: Invalid name '{name}'. "
+                    "Must start with a lowercase letter and contain only "
+                    "lowercase letters, digits, and underscores (pattern: ^[a-z][a-z0-9_]*$)."
+                )
+            if name in seen_names:
+                errors.append(
+                    f"  - Query stream #{i}: Duplicate name '{name}' (first seen in #{seen_names[name]})."
+                )
+            seen_names[name] = i
+
+        if errors:
+            error_list = "\n".join(errors)
+            self.user_logger.error(f"Invalid query_streams configuration:\n{error_list}")
             sys.exit(1)
 
     config_jsonschema = th.PropertiesList(
@@ -240,6 +272,40 @@ class TapMSSQL(SQLTap):
             required=False,
             description="SSH Tunnel Configuration, this is a json object",
         ),
+        th.Property(
+            "query_streams_only",
+            th.BooleanType,
+            default=False,
+            description=(
+                "If true, only query streams (defined in query_streams) will be discovered and synced. "
+                "Table/view discovery will be skipped entirely."
+            ),
+        ),
+        th.Property(
+            "query_streams",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property(
+                        "stream_name",
+                        th.StringType,
+                        required=True,
+                        description="Name for the stream that will be generated from this query.",
+                    ),
+                    th.Property(
+                        "query",
+                        th.StringType,
+                        required=True,
+                        description="SQL query to execute for extracting data.",
+                    ),
+                ),
+            ),
+            required=False,
+            description=(
+                "Array of objects defining custom SQL queries as streams. "
+                "Each object requires 'stream_name' (the name for the output stream) "
+                "and 'query' (the SQL query to execute)."
+            ),
+        ),
     ).to_dict()
 
     def get_sqlalchemy_url(self, config: Mapping[str, Any]) -> str:
@@ -312,7 +378,17 @@ class TapMSSQL(SQLTap):
             return self.input_catalog.to_dict()
 
         result: dict[str, list[dict]] = {"streams": []}
-        result["streams"].extend(self.connector.discover_catalog_entries())
+
+        if not self.config.get("query_streams_only", False):
+            result["streams"].extend(self.connector.discover_catalog_entries())
+
+        # Discover query streams
+        for qs in self.config.get("query_streams", []):
+            entry = self.connector.discover_query_catalog_entry(
+                stream_name=qs["stream_name"],
+                query=qs["query"],
+            )
+            result["streams"].append(entry)
 
         self._catalog_dict: dict = result
         return self._catalog_dict
@@ -375,8 +451,26 @@ class TapMSSQL(SQLTap):
 
     def discover_streams(self) -> Sequence[Stream]:
         streams: list[SQLStream] = []
+        query_stream_names = {
+            qs["stream_name"] for qs in self.config.get("query_streams", [])
+        }
+        query_map = {
+            qs["stream_name"]: qs["query"]
+            for qs in self.config.get("query_streams", [])
+        }
         for catalog_entry in self.catalog_dict["streams"]:
-            streams.append(MSSQLStream(self, catalog_entry, connector=self.connector))
+            stream_id = catalog_entry.get("tap_stream_id", "")
+            if stream_id in query_stream_names:
+                streams.append(
+                    MSSQLQueryStream(
+                        self,
+                        catalog_entry,
+                        connector=self.connector,
+                        query=query_map[stream_id],
+                    )
+                )
+            else:
+                streams.append(MSSQLStream(self, catalog_entry, connector=self.connector))
         return streams
 
     def sync_all(self) -> None:

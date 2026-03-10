@@ -438,6 +438,82 @@ class MSSQLConnector(SQLConnector):
             reflected_indices=reflected_indices,
         )
 
+    def discover_query_catalog_entry(
+        self,
+        stream_name: str,
+        query: str,
+    ) -> dict:
+        """Discover catalog entry for a custom SQL query.
+
+        Executes the query with no rows to introspect column types.
+
+        Args:
+            stream_name: The name for this query stream.
+            query: The SQL query to introspect.
+
+        Returns:
+            A catalog entry dict for the query stream.
+        """
+        self.user_discovery_logger.info(f"Discovering query stream '{stream_name}'...")
+
+        with self._engine.connect() as conn:
+            # Execute with TOP 0 to get column metadata without fetching rows
+            wrapped_query = sa.text(f"SELECT TOP 0 * FROM ({query}) AS _query_discovery")  # noqa: S608
+            result = conn.execute(wrapped_query)
+            cursor_description = result.cursor.description
+
+        properties: dict[str, dict] = {}
+        metadata_entries: list[dict] = []
+
+        for col_desc in cursor_description:
+            col_name = col_desc[0]
+            col_type_code = col_desc[1]
+
+            # Map pymssql type codes to JSON schema types
+            # pymssql type codes: 1=STRING, 2=BINARY, 3=NUMBER, 4=DATETIME, 5=DECIMAL
+            type_map = {
+                1: {"type": ["string", "null"]},
+                2: {"type": ["string", "null"]},
+                3: {"type": ["number", "null"]},
+                4: {"type": ["string", "null"], "format": "date-time"},
+                5: {"type": ["number", "null"]},
+            }
+            col_schema = type_map.get(col_type_code, {"type": ["string", "null"]})
+
+            properties[col_name] = col_schema
+            metadata_entries.append({
+                "breadcrumb": ["properties", col_name],
+                "metadata": {"inclusion": "available"},
+            })
+
+        metadata_entries.append({
+            "breadcrumb": [],
+            "metadata": {
+                "inclusion": "available",
+                "table-key-properties": [],
+                "forced-replication-method": "",
+                "schema-name": "",
+            },
+        })
+
+        catalog_entry = {
+            "tap_stream_id": stream_name,
+            "table_name": stream_name,
+            "replication_method": "",
+            "key_properties": [],
+            "schema": {
+                "properties": properties,
+                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+            },
+            "is_view": False,
+            "stream": stream_name,
+            "metadata": metadata_entries,
+        }
+
+        self.user_discovery_logger.info(f"Discovered query stream '{stream_name}' with {len(properties)} columns.")
+        return catalog_entry
+
     def get_sqlalchemy_type(self, col_meta_type: str) -> sa.Column:
         """Return a SQLAlchemy type object for the given SQL type.
 
