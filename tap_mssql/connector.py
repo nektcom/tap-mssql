@@ -184,7 +184,22 @@ class MSSQLConnector(SQLConnector):
             return [s.strip() for s in self.config["filter_dbs"].split(",")]
 
         schemas = super().get_schema_names(engine, inspected)
-        exclude_schemas = ["information_schema", "INFORMATION_SCHEMA", "performance_schema", "sys"]
+        exclude_schemas = [
+            "information_schema",
+            "INFORMATION_SCHEMA",
+            "performance_schema",
+            "sys",
+            "db_accessadmin",
+            "db_backupoperator",
+            "db_datareader",
+            "db_datawriter",
+            "db_ddladmin",
+            "db_denydatareader",
+            "db_denydatawriter",
+            "db_owner",
+            "db_securityadmin",
+            "guest",
+        ]
         return [schema for schema in schemas if schema not in exclude_schemas]
 
     def _should_include_table(self, schema_name: str, table_name: str) -> bool:
@@ -267,33 +282,66 @@ class MSSQLConnector(SQLConnector):
 
         return exact_names if exact_names else None
 
+    def _fetch_schema_columns_bulk(self, schema_name: str, table_type: str = "BASE TABLE") -> dict[str, list[tuple]]:
+        """Fetch all column metadata for a schema in a single query.
+
+        Returns a dict mapping table_name -> list of column tuples:
+        (COLUMN_NAME, DATA_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH,
+         NUMERIC_PRECISION, NUMERIC_SCALE)
+        """
+        query = sa.text(
+            "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, "
+            "c.CHARACTER_MAXIMUM_LENGTH, c.NUMERIC_PRECISION, c.NUMERIC_SCALE "
+            "FROM INFORMATION_SCHEMA.COLUMNS c "
+            "JOIN INFORMATION_SCHEMA.TABLES t "
+            "  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME "
+            "WHERE c.TABLE_SCHEMA = :schema AND t.TABLE_TYPE = :table_type "
+            "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(query, {"schema": schema_name, "table_type": table_type})
+            columns_by_table: dict[str, list[tuple]] = {}
+            for row in rows:
+                columns_by_table.setdefault(row[0], []).append(row[1:])
+            return columns_by_table
+
+    def _fetch_schema_pks_bulk(self, schema_name: str) -> dict[str, list[str]]:
+        """Fetch primary key columns for all tables in a schema in a single query.
+
+        Returns a dict mapping table_name -> list of PK column names (ordered by position).
+        """
+        query = sa.text(
+            "SELECT kcu.TABLE_NAME, kcu.COLUMN_NAME "
+            "FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+            "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu "
+            "  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME "
+            " AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA "
+            "WHERE tc.TABLE_SCHEMA = :schema "
+            "  AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY' "
+            "ORDER BY kcu.TABLE_NAME, kcu.ORDINAL_POSITION"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(query, {"schema": schema_name})
+            pks_by_table: dict[str, list[str]] = {}
+            for row in rows:
+                pks_by_table.setdefault(row[0], []).append(row[1])
+            return pks_by_table
+
     def discover_catalog_entries(
         self,
         *,
         exclude_schemas: list[str] | None = None,
-        reflect_indices: bool = True,
+        reflect_indices: bool = False,
     ) -> list[dict]:
-        """Return a list of catalog entries from discovery with table filtering.
+        """Return a list of catalog entries from discovery.
 
-        Args:
-            exclude_schemas: A list of schema names to exclude from discovery.
-            reflect_indices: Whether to reflect indices to detect potential primary keys.
-
-        Returns:
-            The discovered catalog entries as a list.
+        Uses bulk INFORMATION_SCHEMA queries instead of SQLAlchemy reflection
+        for dramatically better performance on large schemas.
         """
-        import typing as t
-        import sqlalchemy as sa
-        from sqlalchemy.engine import reflection
-
         self.user_discovery_logger.info("Discovering streams...")
         result: list[dict] = []
         engine = self._engine
         inspected = sa.inspect(engine)
-        object_kinds = (
-            (reflection.ObjectKind.TABLE, False, "tables"),
-            (reflection.ObjectKind.ANY_VIEW, True, "views and materialized views"),
-        )
 
         self.user_discovery_logger.info("Discovering schemas...")
         schemas = self.get_schema_names(engine, inspected)
@@ -305,93 +353,72 @@ class MSSQLConnector(SQLConnector):
 
         exclude_schemas = exclude_schemas or []
         filter_tables_config = self.config.get("filter_tables")
-        
+
         for schema_name in schemas:
             if schema_name in exclude_schemas:
                 self.user_discovery_logger.info(f"Skipping schema '{schema_name}' (schema in exclude_schemas config).")
                 continue
 
-            self.user_discovery_logger.info(f"Discovering metadata for schema '{schema_name}'...")
-
-            # Pre-filter table names at the database level when possible
-            filter_names = self._get_filter_names(schema_name) if filter_tables_config else None
-            if filter_names:
-                self.user_discovery_logger.info(
-                    f"Pre-filtering discovery for schema '{schema_name}' to {len(filter_names)} tables."
-                )
-
+            # Fetch all PKs for the schema in one query
+            self.user_discovery_logger.info(f"Fetching metadata for schema '{schema_name}'...")
             try:
-                primary_keys = inspected.get_multi_pk_constraint(
-                    schema=schema_name, filter_names=filter_names,
-                )
-
-                if reflect_indices:
-                    indices = inspected.get_multi_indexes(
-                        schema=schema_name, filter_names=filter_names,
-                    )
-                else:
-                    indices = {}
-                self.user_discovery_logger.info(f"Discovered metadata for schema '{schema_name}'.")
+                schema_pks = self._fetch_schema_pks_bulk(schema_name)
             except Exception as e:
-                self.user_discovery_logger.error(f"Skipping schema '{schema_name}' due to error: {e}")
+                self.user_discovery_logger.error(f"Skipping schema '{schema_name}' due to error fetching PKs: {e}")
                 continue
 
-            for object_kind, is_view, object_kind_name in object_kinds:
-
-                self.user_discovery_logger.info(f"Discovering {object_kind_name} for schema '{schema_name}'...")
+            for table_type, is_view, object_kind_name in (
+                ("BASE TABLE", False, "tables"),
+                ("VIEW", True, "views"),
+            ):
+                self.user_discovery_logger.info(f"Fetching {object_kind_name} for schema '{schema_name}'...")
                 try:
-                    columns = inspected.get_multi_columns(
-                        schema=schema_name,
-                        kind=object_kind,
-                        filter_names=filter_names,
-                    )
-
-                    # Apply post-filtering for wildcard patterns (when filter_names is None
-                    # but filter_tables_config is set, it means wildcards are in use)
-                    if filter_tables_config and filter_names is None:
-                        original_count = len(columns)
-                        columns = {
-                            (schema, table): cols
-                            for (schema, table), cols in columns.items()
-                            if self._should_include_table(schema, table)
-                        }
-                        filtered_count = len(columns)
-                        if original_count > filtered_count:
-                            self.user_discovery_logger.info(
-                                f"Filtered {object_kind_name} for schema '{schema_name}' "
-                                f"from {original_count} to {filtered_count} based on filter_tables config."
-                            )
-                    
-                    if columns:
-                        columns_list = "\n\t- " + "\n\t- ".join(table for _, table in columns)
-                        self.user_discovery_logger.info(
-                            f"Discovered {object_kind_name} for schema '{schema_name}' ({len(columns)}): {columns_list}"
-                        )
-                    else:
-                        self.user_discovery_logger.info(f"No {object_kind_name} discovered for schema '{schema_name}'.")
+                    schema_columns = self._fetch_schema_columns_bulk(schema_name, table_type)
                 except Exception as e:
                     self.user_discovery_logger.error(
                         f"Skipping {object_kind_name} for schema '{schema_name}' due to error: {e}"
                     )
                     continue
 
-                for schema, table in columns:
+                # Apply table filtering
+                if filter_tables_config:
+                    filter_names = self._get_filter_names(schema_name)
+                    if filter_names:
+                        filter_set = set(filter_names)
+                        schema_columns = {t: c for t, c in schema_columns.items() if t in filter_set}
+                    else:
+                        original_count = len(schema_columns)
+                        schema_columns = {
+                            t: c for t, c in schema_columns.items()
+                            if self._should_include_table(schema_name, t)
+                        }
+                        if original_count > len(schema_columns):
+                            self.user_discovery_logger.info(
+                                f"Filtered {object_kind_name} for schema '{schema_name}' "
+                                f"from {original_count} to {len(schema_columns)} based on filter_tables config."
+                            )
+
+                if not schema_columns:
+                    self.user_discovery_logger.info(f"No {object_kind_name} discovered for schema '{schema_name}'.")
+                    continue
+
+                self.user_discovery_logger.info(
+                    f"Discovered {len(schema_columns)} {object_kind_name} for schema '{schema_name}'."
+                )
+
+                for table_name, columns in schema_columns.items():
                     try:
-                        self.user_discovery_logger.info(f"Discovering details for table '{schema}.{table}'...")
-                        new_catalog_entry = self.discover_catalog_entry(
-                            engine,
-                            inspected,
-                            schema_name,
-                            table,
-                            is_view,
-                            reflected_columns=columns[schema, table],
-                            reflected_pk=primary_keys.get((schema, table)),
-                            reflected_indices=indices.get((schema, table), []),
+                        new_catalog_entry = self._build_catalog_entry(
+                            schema_name=schema_name,
+                            table_name=table_name,
+                            is_view=is_view,
+                            prefetched_columns=columns,
+                            prefetched_pk=schema_pks.get(table_name, []),
                         ).to_dict()
                         result.append(new_catalog_entry)
                     except Exception as e:
                         self.user_discovery_logger.error(
-                            f"Skipping table '{table}' of schema '{schema}' due to error: {e}"
+                            f"Skipping table '{table_name}' of schema '{schema_name}' due to error: {e}"
                         )
                         continue
 
@@ -402,6 +429,85 @@ class MSSQLConnector(SQLConnector):
             self.user_discovery_logger.error("No streams discovered, please check your configurations.")
 
         return result
+
+    def _build_catalog_entry(
+        self,
+        schema_name: str,
+        table_name: str,
+        is_view: bool,  # noqa: FBT001
+        prefetched_columns: list[tuple],
+        prefetched_pk: list[str],
+    ) -> CatalogEntry:
+        """Build a CatalogEntry from prefetched bulk query data.
+
+        Args:
+            schema_name: Schema name.
+            table_name: Table name.
+            is_view: Whether this is a view.
+            prefetched_columns: Column tuples from _fetch_schema_columns_bulk().
+            prefetched_pk: PK column names from _fetch_schema_pks_bulk().
+        """
+        unique_stream_id = self.get_fully_qualified_name(
+            db_name=None,
+            schema_name=schema_name,
+            table_name=table_name,
+            delimiter="-",
+        )
+
+        key_properties = list(prefetched_pk) if prefetched_pk else []
+
+        table_schema = th.PropertiesList()
+        for col in prefetched_columns:
+            col_name = col[0]       # COLUMN_NAME
+            data_type = col[1]      # DATA_TYPE
+            is_nullable = col[2]    # IS_NULLABLE ('YES'/'NO')
+            char_max_len = col[3]   # CHARACTER_MAXIMUM_LENGTH
+            num_precision = col[4]  # NUMERIC_PRECISION
+            num_scale = col[5]      # NUMERIC_SCALE
+
+            # Build type string for proper mapping
+            if data_type in ("decimal", "numeric") and num_precision is not None:
+                if num_scale is not None and num_scale > 0:
+                    type_str = f"{data_type}({num_precision},{num_scale})"
+                else:
+                    type_str = f"{data_type}({num_precision})"
+            elif data_type in ("varchar", "nvarchar", "char", "nchar") and char_max_len is not None:
+                type_str = f"{data_type}({char_max_len})"
+            else:
+                type_str = data_type
+
+            jsonschema_type = self.to_jsonschema_type(type_str)
+            table_schema.append(
+                th.Property(
+                    name=col_name,
+                    wrapped=th.CustomType(jsonschema_type),
+                    required=col_name in key_properties,
+                ),
+            )
+        schema = table_schema.to_dict()
+
+        replication_method = "FULL_TABLE"
+
+        return CatalogEntry(
+            tap_stream_id=str(unique_stream_id),
+            stream=str(unique_stream_id),
+            table=table_name,
+            key_properties=key_properties or None,
+            schema=Schema.from_dict(schema),
+            is_view=is_view,
+            replication_method=replication_method,
+            metadata=MetadataMapping.get_standard_metadata(
+                schema_name=schema_name,
+                schema=schema,
+                replication_method=replication_method,
+                key_properties=key_properties or None,
+                valid_replication_keys=None,
+            ),
+            database=None,
+            row_count=None,
+            stream_alias=None,
+            replication_key=None,
+        )
 
     def discover_catalog_entry(
         self,
@@ -417,15 +523,7 @@ class MSSQLConnector(SQLConnector):
     ) -> CatalogEntry:
         """Create `CatalogEntry` object for the given table or a view.
 
-        Args:
-            engine: SQLAlchemy engine
-            inspected: SQLAlchemy inspector instance for engine
-            schema_name: Schema name to inspect
-            table_name: Name of the table or a view
-            is_view: Flag whether this object is a view, returned by `get_object_names`
-
-        Returns:
-            `CatalogEntry` object for the given table or a view
+        Kept for compatibility with the parent class interface.
         """
         return super().discover_catalog_entry(
             engine,
