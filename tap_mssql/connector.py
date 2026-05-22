@@ -196,13 +196,21 @@ class MSSQLConnector(SQLConnector):
         "guest",
     })
 
-    def get_schema_names(self, engine: Engine | None = None, inspected: Inspector | None = None) -> list[str]:
+    def get_schema_names(
+        self,
+        engine: Engine | None = None,
+        inspected: Inspector | None = None,
+        conn: sa.Connection | None = None,
+    ) -> list[str]:
         if "filter_dbs" in self.config and self.config["filter_dbs"]:
             return [s.strip() for s in self.config["filter_dbs"].split(",")]
 
         query = sa.text("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME")
-        with self._engine.connect() as conn:
+        if conn is not None:
             schemas = [row[0] for row in conn.execute(query)]
+        else:
+            with self._engine.connect() as conn:
+                schemas = [row[0] for row in conn.execute(query)]
         return [s for s in schemas if s not in self._EXCLUDE_SCHEMAS]
 
     def _should_include_table(self, schema_name: str, table_name: str) -> bool:
@@ -285,7 +293,9 @@ class MSSQLConnector(SQLConnector):
 
         return exact_names if exact_names else None
 
-    def _fetch_schema_columns_bulk(self, schema_name: str, table_type: str = "BASE TABLE") -> dict[str, list[tuple]]:
+    def _fetch_schema_columns_bulk(
+        self, schema_name: str, table_type: str, conn: sa.Connection,
+    ) -> dict[str, list[tuple]]:
         """Fetch all column metadata for a schema in a single query.
 
         Returns a dict mapping table_name -> list of column tuples:
@@ -301,14 +311,13 @@ class MSSQLConnector(SQLConnector):
             "WHERE c.TABLE_SCHEMA = :schema AND t.TABLE_TYPE = :table_type "
             "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION"
         )
-        with self._engine.connect() as conn:
-            rows = conn.execute(query, {"schema": schema_name, "table_type": table_type})
-            columns_by_table: dict[str, list[tuple]] = {}
-            for row in rows:
-                columns_by_table.setdefault(row[0], []).append(row[1:])
-            return columns_by_table
+        rows = conn.execute(query, {"schema": schema_name, "table_type": table_type})
+        columns_by_table: dict[str, list[tuple]] = {}
+        for row in rows:
+            columns_by_table.setdefault(row[0], []).append(row[1:])
+        return columns_by_table
 
-    def _fetch_schema_pks_bulk(self, schema_name: str) -> dict[str, list[str]]:
+    def _fetch_schema_pks_bulk(self, schema_name: str, conn: sa.Connection) -> dict[str, list[str]]:
         """Fetch primary key columns for all tables in a schema in a single query.
 
         Returns a dict mapping table_name -> list of PK column names (ordered by position).
@@ -323,12 +332,11 @@ class MSSQLConnector(SQLConnector):
             "  AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY' "
             "ORDER BY kcu.TABLE_NAME, kcu.ORDINAL_POSITION"
         )
-        with self._engine.connect() as conn:
-            rows = conn.execute(query, {"schema": schema_name})
-            pks_by_table: dict[str, list[str]] = {}
-            for row in rows:
-                pks_by_table.setdefault(row[0], []).append(row[1])
-            return pks_by_table
+        rows = conn.execute(query, {"schema": schema_name})
+        pks_by_table: dict[str, list[str]] = {}
+        for row in rows:
+            pks_by_table.setdefault(row[0], []).append(row[1])
+        return pks_by_table
 
     def discover_catalog_entries(
         self,
@@ -343,85 +351,87 @@ class MSSQLConnector(SQLConnector):
         """
         self.user_discovery_logger.info("Discovering streams...")
         result: list[dict] = []
-
-        self.user_discovery_logger.info("Discovering schemas...")
-        schemas = self.get_schema_names()
-        if schemas:
-            schema_list = "\n\t- " + "\n\t- ".join(schemas)
-            self.user_discovery_logger.info(f"Discovered schemas ({len(schemas)}): {schema_list}")
-        else:
-            self.user_discovery_logger.error("No schemas discovered, please check your configurations.")
-
         exclude_schemas = exclude_schemas or []
         filter_tables_config = self.config.get("filter_tables")
 
-        for schema_name in schemas:
-            if schema_name in exclude_schemas:
-                self.user_discovery_logger.info(f"Skipping schema '{schema_name}' (schema in exclude_schemas config).")
-                continue
+        # Use a single connection for the entire discovery process to avoid
+        # connection pool issues on servers with strict connection limits.
+        with self._engine.connect() as conn:
+            self.user_discovery_logger.info("Discovering schemas...")
+            schemas = self.get_schema_names(conn=conn)
+            if schemas:
+                schema_list = "\n\t- " + "\n\t- ".join(schemas)
+                self.user_discovery_logger.info(f"Discovered schemas ({len(schemas)}): {schema_list}")
+            else:
+                self.user_discovery_logger.error("No schemas discovered, please check your configurations.")
 
-            # Fetch all PKs for the schema in one query
-            self.user_discovery_logger.info(f"Fetching metadata for schema '{schema_name}'...")
-            try:
-                schema_pks = self._fetch_schema_pks_bulk(schema_name)
-            except Exception as e:
-                self.user_discovery_logger.error(f"Skipping schema '{schema_name}' due to error fetching PKs: {e}")
-                continue
+            for schema_name in schemas:
+                if schema_name in exclude_schemas:
+                    self.user_discovery_logger.info(f"Skipping schema '{schema_name}' (schema in exclude_schemas config).")
+                    continue
 
-            for table_type, is_view, object_kind_name in (
-                ("BASE TABLE", False, "tables"),
-                ("VIEW", True, "views"),
-            ):
-                self.user_discovery_logger.info(f"Fetching {object_kind_name} for schema '{schema_name}'...")
+                # Fetch all PKs for the schema in one query
+                self.user_discovery_logger.info(f"Fetching metadata for schema '{schema_name}'...")
                 try:
-                    schema_columns = self._fetch_schema_columns_bulk(schema_name, table_type)
+                    schema_pks = self._fetch_schema_pks_bulk(schema_name, conn)
                 except Exception as e:
-                    self.user_discovery_logger.error(
-                        f"Skipping {object_kind_name} for schema '{schema_name}' due to error: {e}"
-                    )
+                    self.user_discovery_logger.error(f"Skipping schema '{schema_name}' due to error fetching PKs: {e}")
                     continue
 
-                # Apply table filtering
-                if filter_tables_config:
-                    filter_names = self._get_filter_names(schema_name)
-                    if filter_names:
-                        filter_set = set(filter_names)
-                        schema_columns = {t: c for t, c in schema_columns.items() if t in filter_set}
-                    else:
-                        original_count = len(schema_columns)
-                        schema_columns = {
-                            t: c for t, c in schema_columns.items()
-                            if self._should_include_table(schema_name, t)
-                        }
-                        if original_count > len(schema_columns):
-                            self.user_discovery_logger.info(
-                                f"Filtered {object_kind_name} for schema '{schema_name}' "
-                                f"from {original_count} to {len(schema_columns)} based on filter_tables config."
-                            )
-
-                if not schema_columns:
-                    self.user_discovery_logger.info(f"No {object_kind_name} discovered for schema '{schema_name}'.")
-                    continue
-
-                self.user_discovery_logger.info(
-                    f"Discovered {len(schema_columns)} {object_kind_name} for schema '{schema_name}'."
-                )
-
-                for table_name, columns in schema_columns.items():
+                for table_type, is_view, object_kind_name in (
+                    ("BASE TABLE", False, "tables"),
+                    ("VIEW", True, "views"),
+                ):
+                    self.user_discovery_logger.info(f"Fetching {object_kind_name} for schema '{schema_name}'...")
                     try:
-                        new_catalog_entry = self._build_catalog_entry(
-                            schema_name=schema_name,
-                            table_name=table_name,
-                            is_view=is_view,
-                            prefetched_columns=columns,
-                            prefetched_pk=schema_pks.get(table_name, []),
-                        ).to_dict()
-                        result.append(new_catalog_entry)
+                        schema_columns = self._fetch_schema_columns_bulk(schema_name, table_type, conn)
                     except Exception as e:
                         self.user_discovery_logger.error(
-                            f"Skipping table '{table_name}' of schema '{schema_name}' due to error: {e}"
+                            f"Skipping {object_kind_name} for schema '{schema_name}' due to error: {e}"
                         )
                         continue
+
+                    # Apply table filtering
+                    if filter_tables_config:
+                        filter_names = self._get_filter_names(schema_name)
+                        if filter_names:
+                            filter_set = set(filter_names)
+                            schema_columns = {t: c for t, c in schema_columns.items() if t in filter_set}
+                        else:
+                            original_count = len(schema_columns)
+                            schema_columns = {
+                                t: c for t, c in schema_columns.items()
+                                if self._should_include_table(schema_name, t)
+                            }
+                            if original_count > len(schema_columns):
+                                self.user_discovery_logger.info(
+                                    f"Filtered {object_kind_name} for schema '{schema_name}' "
+                                    f"from {original_count} to {len(schema_columns)} based on filter_tables config."
+                                )
+
+                    if not schema_columns:
+                        self.user_discovery_logger.info(f"No {object_kind_name} discovered for schema '{schema_name}'.")
+                        continue
+
+                    self.user_discovery_logger.info(
+                        f"Discovered {len(schema_columns)} {object_kind_name} for schema '{schema_name}'."
+                    )
+
+                    for table_name, columns in schema_columns.items():
+                        try:
+                            new_catalog_entry = self._build_catalog_entry(
+                                schema_name=schema_name,
+                                table_name=table_name,
+                                is_view=is_view,
+                                prefetched_columns=columns,
+                                prefetched_pk=schema_pks.get(table_name, []),
+                            ).to_dict()
+                            result.append(new_catalog_entry)
+                        except Exception as e:
+                            self.user_discovery_logger.error(
+                                f"Skipping table '{table_name}' of schema '{schema_name}' due to error: {e}"
+                            )
+                            continue
 
         if result:
             stream_list = "\n\t- " + "\n\t- ".join([catalog_entry.get("tap_stream_id") for catalog_entry in result])
