@@ -179,28 +179,31 @@ class MSSQLConnector(SQLConnector):
 
         return sqltype_lookup["string"]  # safe failover to str
 
-    def get_schema_names(self, engine: Engine, inspected: Inspector) -> list[str]:
+    _EXCLUDE_SCHEMAS = frozenset({
+        "information_schema",
+        "INFORMATION_SCHEMA",
+        "performance_schema",
+        "sys",
+        "db_accessadmin",
+        "db_backupoperator",
+        "db_datareader",
+        "db_datawriter",
+        "db_ddladmin",
+        "db_denydatareader",
+        "db_denydatawriter",
+        "db_owner",
+        "db_securityadmin",
+        "guest",
+    })
+
+    def get_schema_names(self, engine: Engine | None = None, inspected: Inspector | None = None) -> list[str]:
         if "filter_dbs" in self.config and self.config["filter_dbs"]:
             return [s.strip() for s in self.config["filter_dbs"].split(",")]
 
-        schemas = super().get_schema_names(engine, inspected)
-        exclude_schemas = [
-            "information_schema",
-            "INFORMATION_SCHEMA",
-            "performance_schema",
-            "sys",
-            "db_accessadmin",
-            "db_backupoperator",
-            "db_datareader",
-            "db_datawriter",
-            "db_ddladmin",
-            "db_denydatareader",
-            "db_denydatawriter",
-            "db_owner",
-            "db_securityadmin",
-            "guest",
-        ]
-        return [schema for schema in schemas if schema not in exclude_schemas]
+        query = sa.text("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME")
+        with self._engine.connect() as conn:
+            schemas = [row[0] for row in conn.execute(query)]
+        return [s for s in schemas if s not in self._EXCLUDE_SCHEMAS]
 
     def _should_include_table(self, schema_name: str, table_name: str) -> bool:
         """Check if a table should be included based on filter_tables config.
@@ -340,11 +343,9 @@ class MSSQLConnector(SQLConnector):
         """
         self.user_discovery_logger.info("Discovering streams...")
         result: list[dict] = []
-        engine = self._engine
-        inspected = sa.inspect(engine)
 
         self.user_discovery_logger.info("Discovering schemas...")
-        schemas = self.get_schema_names(engine, inspected)
+        schemas = self.get_schema_names()
         if schemas:
             schema_list = "\n\t- " + "\n\t- ".join(schemas)
             self.user_discovery_logger.info(f"Discovered schemas ({len(schemas)}): {schema_list}")
