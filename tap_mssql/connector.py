@@ -313,7 +313,7 @@ class MSSQLConnector(SQLConnector):
         )
         rows = conn.execute(query, {"schema": schema_name, "table_type": table_type})
         columns_by_table: dict[str, list[tuple]] = {}
-        for row in rows:
+        for row in rows.fetchall():
             columns_by_table.setdefault(row[0], []).append(row[1:])
         return columns_by_table
 
@@ -334,7 +334,7 @@ class MSSQLConnector(SQLConnector):
         )
         rows = conn.execute(query, {"schema": schema_name})
         pks_by_table: dict[str, list[str]] = {}
-        for row in rows:
+        for row in rows.fetchall():
             pks_by_table.setdefault(row[0], []).append(row[1])
         return pks_by_table
 
