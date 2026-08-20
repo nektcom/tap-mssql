@@ -1,6 +1,6 @@
 [project]
 name = "tap-mssql"
-version = "3.0.0"
+version = "3.0.1"
 description = "`tap-mssql` is a Singer tap for Microsoft SQL Server, built with the Meltano Singer SDK."
 authors = [{name = "Nekt Team and Contributors"}]
 maintainers = [{name = "Nekt Team and Contributors"}]

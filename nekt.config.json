@@ -5,14 +5,26 @@
     "namespace": "tap_mssql",
     "pip_url": "-e ./extract/tap-mssql",
     "executable": "tap-mssql",
-    "capabilities": ["state", "catalog", "discover"]
+    "capabilities": [
+      "state",
+      "catalog",
+      "discover"
+    ]
   },
+  "base_image_type": "base",
+  "python": "3.11",
   "connectors": [
     {
       "connector_slug": "mssql",
       "config_template": {
         "type": "object",
-        "required": ["host", "port", "user", "database", "password"],
+        "required": [
+          "host",
+          "port",
+          "user",
+          "database",
+          "password"
+        ],
         "properties": {
           "host": {
             "type": "string",
@@ -75,7 +87,10 @@
             "title": "Cursor Array Size",
             "default": 10000,
             "el_type": "extractor",
-            "examples": [1, 10000],
+            "examples": [
+              1,
+              10000
+            ],
             "description": "This allows fetching records in batches speeding up network traffic. Recommend a setting of 10000 records.",
             "advanced_settings": true
           },
@@ -182,7 +197,11 @@
             "title": "Encryption",
             "format": "dropdown",
             "default": "off",
-            "enum": ["off", "request", "require"],
+            "enum": [
+              "off",
+              "request",
+              "require"
+            ],
             "allowed_values": [
               {
                 "label": "Off",
@@ -221,7 +240,10 @@
             "el_type": "extractor",
             "items": {
               "type": "object",
-              "required": ["stream_name", "query"],
+              "required": [
+                "stream_name",
+                "query"
+              ],
               "properties": {
                 "stream_name": {
                   "type": "string",
