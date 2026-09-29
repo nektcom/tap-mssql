@@ -19,6 +19,7 @@ from nekt_singer_sdk.singerlib import Catalog, Metadata, Schema, StateMessage
 from sqlalchemy.engine import URL
 from sqlalchemy.engine.url import make_url
 
+from tap_mssql import host_fallback
 from tap_mssql.connector import MSSQLConnector
 from tap_mssql.ssh_tunnel import SSHTunnelForwarder
 from tap_mssql.streams import MSSQLQueryStream, MSSQLStream
@@ -97,6 +98,28 @@ class TapMSSQL(SQLTap):
             th.IntegerType,
             default=1433,
             description=("The port on which MSSQL is awaiting connection. Note if sqlalchemy_url is set this will be ignored."),
+        ),
+        th.Property(
+            "fallback_host",
+            th.StringType,
+            description=(
+                "Optional. Secondary address of the same MSSQL instance (e.g. a second internet link). "
+                "When set, the tap probes 'host' at startup and uses this address only if 'host' cannot "
+                "be reached; the chosen host is kept for the whole run. Note if sqlalchemy_url is set this will be ignored."
+            ),
+        ),
+        th.Property(
+            "fallback_port",
+            th.IntegerType,
+            description="Optional. Port for 'fallback_host'. Defaults to 'port'.",
+        ),
+        th.Property(
+            "fallback_probe_timeout",
+            th.IntegerType,
+            description=(
+                "Optional. Seconds to wait for each startup connection probe when 'fallback_host' is set. "
+                f"Defaults to {host_fallback.DEFAULT_PROBE_TIMEOUT_SECONDS}."
+            ),
         ),
         th.Property(
             "user",
@@ -356,12 +379,11 @@ class TapMSSQL(SQLTap):
 
     @cached_property
     def connector(self) -> MSSQLConnector:
-        url = make_url(self.get_sqlalchemy_url(config=self.config))
-        ssh_config = self.config.get("ssh_tunnel", {})
-
-        if ssh_config.get("enable", False):
-            # Return a new URL with SSH tunnel parameters
-            url = self.ssh_tunnel_connect(ssh_config=ssh_config, url=url)
+        # Cached: the host is chosen once per run and every stream shares this engine.
+        if self.config.get("fallback_host") and not self.config.get("sqlalchemy_url"):
+            url = self._connect_with_fallback()
+        else:
+            url = self._open_url(self.config)
 
         return MSSQLConnector(
             is_running_discovery=self.is_running_discovery,
@@ -520,6 +542,93 @@ class TapMSSQL(SQLTap):
         errmsg = "Could not determine the key type."
         raise ValueError(errmsg)
 
+    def _open_url(self, config: Mapping[str, Any]) -> URL:
+        """Build the connection URL, routed through the SSH tunnel when enabled."""
+        url = make_url(self.get_sqlalchemy_url(config=config))
+        ssh_config = config.get("ssh_tunnel", {})
+
+        if ssh_config.get("enable", False):
+            # Return a new URL with SSH tunnel parameters
+            url = self.ssh_tunnel_connect(ssh_config=ssh_config, url=url)
+        return url
+
+    def _connect_with_fallback(self) -> URL:
+        """Probe the primary host, then the fallback, and return the URL of the first that connects.
+
+        Runs only when ``fallback_host`` is set. The fallback is never used as a
+        failover during the sync: the returned URL is the only one the run uses.
+        """
+        timeout = int(self.config.get("fallback_probe_timeout") or host_fallback.DEFAULT_PROBE_TIMEOUT_SECONDS)
+        ssh_enabled = bool(self.config.get("ssh_tunnel", {}).get("enable", False))
+        candidates = host_fallback.host_candidates(self.config)
+        attempts: list[host_fallback.ConnectionAttempt] = []
+
+        for index, candidate in enumerate(candidates):
+            self.internal_logger.info(
+                f"[connection] Trying {candidate.role} host {candidate.address} "
+                f"(attempt {index + 1}/{len(candidates)}, probe timeout {timeout}s, ssh_tunnel={ssh_enabled})"
+            )
+            config = {**self.config, "host": candidate.host, "port": candidate.port}
+            try:
+                url = self._open_url(config)
+            except Exception as exc:  # noqa: BLE001
+                attempt = host_fallback.ConnectionAttempt(candidate, host_fallback.STAGE_SSH_TUNNEL, None, str(exc))
+                self.internal_logger.warning(
+                    f"[connection] {candidate.role} host {candidate.address} failed at stage "
+                    f"'{attempt.stage}': {attempt.detail}",
+                    exc_info=True,
+                )
+            else:
+                try:
+                    host_fallback.probe(url, timeout)
+                except Exception as exc:  # noqa: BLE001
+                    stage, code, detail = host_fallback.classify_error(exc)
+                    attempt = host_fallback.ConnectionAttempt(candidate, stage, code, detail)
+                    self.internal_logger.warning(
+                        f"[connection] {candidate.role} host {candidate.address} failed at stage "
+                        f"'{stage}' (code={code}): {detail}",
+                        exc_info=True,
+                    )
+                    if ssh_enabled:
+                        self.ssh_tunnel.stop()
+                else:
+                    self.internal_logger.info(
+                        f"[connection] Connected to {candidate.role} host {candidate.address}; "
+                        "pinning it for the whole run"
+                    )
+                    if attempts:
+                        failed = attempts[0]
+                        self.user_logger.warning(
+                            f"Could not connect to the primary host {failed.candidate.address}: "
+                            f"{failed.stage_description}. This run is using the fallback host "
+                            f"{candidate.address} and will stay on it until it finishes."
+                        )
+                    return url
+
+            attempts.append(attempt)
+            if index + 1 < len(candidates):
+                nxt = candidates[index + 1]
+                self.internal_logger.info(
+                    f"[connection] {candidate.role} host unavailable; trying {nxt.role} host {nxt.address}"
+                )
+
+        summary = "; ".join(
+            f"{a.candidate.role} host {a.candidate.address}: {a.stage_description}" for a in attempts
+        )
+        self.user_logger.error(
+            f"Could not connect to the database on any of the configured hosts ({summary}). "
+            "The extraction was stopped. Check that at least one of the addresses is reachable "
+            "from Nekt and that the user, password and database are correct."
+        )
+        self.internal_logger.error(
+            "[connection] All hosts failed: "
+            + "; ".join(
+                f"{a.candidate.role}={a.candidate.address} stage={a.stage} code={a.code} detail={a.detail}"
+                for a in attempts
+            )
+        )
+        sys.exit(1)
+
     def ssh_tunnel_connect(self, *, ssh_config: dict[str, Any], url: URL) -> URL:
         """Connect to the SSH Tunnel and swap the URL to use the tunnel.
 
@@ -549,11 +658,14 @@ class TapMSSQL(SQLTap):
         )
         self.ssh_tunnel.start()
         self.internal_logger.info("SSH Tunnel started")
-        # On program exit clean up, want to also catch signals
-        atexit.register(self.clean_up)
-        signal.signal(signal.SIGTERM, self.catch_signal)
-        # Probably overkill to catch SIGINT, but needed for SIGTERM
-        signal.signal(signal.SIGINT, self.catch_signal)
+        # On program exit clean up, want to also catch signals. Registered once:
+        # with a fallback host the tunnel may be reopened for the second probe.
+        if not getattr(self, "_ssh_clean_up_registered", False):
+            atexit.register(self.clean_up)
+            signal.signal(signal.SIGTERM, self.catch_signal)
+            # Probably overkill to catch SIGINT, but needed for SIGTERM
+            signal.signal(signal.SIGINT, self.catch_signal)
+            self._ssh_clean_up_registered = True
 
         # Swap the URL to use the tunnel
         return url.set(

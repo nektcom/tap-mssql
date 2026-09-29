@@ -260,6 +260,31 @@
               }
             },
             "advanced_settings": true
+          },
+          "fallback_host": {
+            "type": "string",
+            "order": 16,
+            "title": "Fallback host",
+            "el_type": "extractor",
+            "description": "Optional secondary address of the same database (for example, a second internet link). When set, the connector tries the main host first and uses this one only if the main host cannot be reached at startup. The chosen host is kept for the whole run.",
+            "advanced_settings": true
+          },
+          "fallback_port": {
+            "type": "integer",
+            "order": 17,
+            "title": "Fallback port",
+            "el_type": "extractor",
+            "description": "Port for the fallback host. Leave empty to use the same port as the main host.",
+            "advanced_settings": true
+          },
+          "fallback_probe_timeout": {
+            "type": "integer",
+            "order": 18,
+            "title": "Fallback connection timeout (seconds)",
+            "el_type": "extractor",
+            "placeholder": "15",
+            "description": "Only used when a fallback host is set: how long to wait for each host to answer at startup before giving up on it. Defaults to 15 seconds.",
+            "advanced_settings": true
           }
         }
       }
